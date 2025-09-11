@@ -105,78 +105,85 @@ def process_landmark(image_input, latitude=None, longitude=None, language="Engli
         if not language_prompt:
             raise ValueError(f"Unsupported language: {language}")
 
+        # Debugging: Print language prompt to confirm it's being passed correctly
+        print(f"Using language: {language}")
+        print(f"Language prompt: {language_prompt}")
+        print(f"Address: {address}")
+
         # Construct the dynamic prompt
         unified_prompt = f"""
-{language_prompt}
+        {language_prompt}
 
-Given image is from {address}, a popular tourist destination.
+        Given image is from {address}, a popular tourist destination.
+        You are an expert travel guide and architectural analyst. Your task is to analyze the provided image and generate a detailed, engaging, and factually accurate report about the prominent place or structure shown.
 
-You are an expert travel guide and architectural analyst. Your task is to analyze the provided image and generate a detailed, engaging, and factually accurate report about the prominent place or structure shown.
+        CRITICAL PROCESSING INSTRUCTIONS:
 
-CRITICAL PROCESSING INSTRUCTIONS:
+        First, analyze the image to determine if the subject is a Historical Landmark (e.g., ancient temple, medieval castle, monument with deep historical significance) or a General Place of Interest (e.g., modern skyscraper, iconic bridge, famous commercial building, natural wonder, public square).
 
-First, analyze the image to determine if the subject is a Historical Landmark (e.g., ancient temple, medieval castle, monument with deep historical significance) or a General Place of Interest (e.g., modern skyscraper, iconic bridge, famous commercial building, natural wonder, public square).
+        Based on your classification, output the report using only one of the two exact templates below.
 
-Based on your classification, output the report using only one of the two exact templates below.
+        TEMPLATE A: For a Historical Landmark
+        {headings["location"]} [Full Official Landmark Name]
 
-TEMPLATE A: For a Historical Landmark
-{headings["location"]} [Full Official Landmark Name]
+        {headings["location"]}: [City, Country]
 
-{headings["location"]}: [City, Country]
+        {headings["year_completed"]}: [Year or Era] (Omit if not known or not applicable)
 
-{headings["year_completed"]}: [Year or Era] (Omit if not known or not applicable)
+        {headings["materials"]}: [Primary construction materials] (Omit if not discernible)
 
-{headings["materials"]}: [Primary construction materials] (Omit if not discernible)
+        {headings["architectural_style"]}: [Predominant architectural style] (Omit if not classified)
 
-{headings["architectural_style"]}: [Predominant architectural style] (Omit if not classified)
+        {headings["historical_overview"]}:
+        [A concise paragraph detailing its origin, key historical events, and significant figures involved (e.g., architects, rulers). Focus on its historical narrative.]
 
-{headings["historical_overview"]}:
-[A concise paragraph detailing its origin, key historical events, and significant figures involved (e.g., architects, rulers). Focus on its historical narrative.]
+        {headings["cultural_impact"]}:
+        [A single paragraph explaining its symbolic meaning, its influence on national/regional identity, and its role in culture, arts, or collective memory.]
 
-{headings["cultural_impact"]}:
-[A single paragraph explaining its symbolic meaning, its influence on national/regional identity, and its role in culture, arts, or collective memory.]
+        {headings["famous_for"]}:
+        [1. Primary reason for global fame]
 
-{headings["famous_for"]}:
-[1. Primary reason for global fame]
+        [2. Secondary distinct reason]
 
-[2. Secondary distinct reason]
+        [3. Tertiary distinct reason]
 
-[3. Tertiary distinct reason]
+        TEMPLATE B: For a General Place of Interest
+        {headings["location"]} [Full Official Name of the Place/Structure]
 
-TEMPLATE B: For a General Place of Interest
-{headings["location"]} [Full Official Name of the Place/Structure]
+        {headings["location"]}: [City, Country]
 
-{headings["location"]}: [City, Country]
+        {headings["year_completed"]}: [Year] (Omit if not known)
 
-{headings["year_completed"]}: [Year] (Omit if not known)
+        {headings["key_features"]}: [Notable materials, engineering marvels, or design elements] (Omit if not discernible)
 
-{headings["key_features"]}: [Notable materials, engineering marvels, or design elements] (Omit if not discernible)
+        {headings["primary_function"]}: [E.g., Observation Tower, Transportation Hub, Commercial Center, Public Park] (Omit if not applicable)
 
-{headings["primary_function"]}: [E.g., Observation Tower, Transportation Hub, Commercial Center, Public Park] (Omit if not applicable)
+        {headings["overview_and_significance"]}:
+        [A concise paragraph describing what it is, its primary purpose, and why it is significant to the city or field (e.g., engineering, urban planning, commerce).]
 
-{headings["overview_and_significance"]}:
-[A concise paragraph describing what it is, its primary purpose, and why it is significant to the city or field (e.g., engineering, urban planning, commerce).]
+        [{headings["visitor_experience"]}]:
+        [A single paragraph highlighting what visitors can see and do there, the atmosphere, and any unique experiential aspects.]
 
-[{headings["visitor_experience"]}]:
-[A single paragraph highlighting what visitors can see and do there, the atmosphere, and any unique experiential aspects.]
+        [{headings["known_for"]}]:
+        [1. Primary claim to fame]
 
-[{headings["known_for"]}]:
-[1. Primary claim to fame]
+        [2. Secondary distinct feature or fact]
 
-[2. Secondary distinct feature or fact]
+        [3. Tertiary distinct feature or fact]
 
-[3. Tertiary distinct feature or fact]
+        GLOBAL OUTPUT RULES (Apply to both templates):
 
-GLOBAL OUTPUT RULES (Apply to both templates):
+        - Zero Repetition: Do not repeat any fact, figure, or description across different sections.
+        - Conciseness: Use clear, efficient, and engaging language. Avoid fluff and redundancy.
+        - Deduction: Base your analysis on visual cues from the image and your encyclopedic knowledge. Omit any numbered line (e.g., Year Completed, Materials) if the information cannot be reasonably inferred or is not applicable.
+        - Structure: Maintain the exact spacing, bolding, and section ordering as shown in the chosen template.
+        - **Return the output strictly as a JSON object with keys:**
+        "landmark_name", "location", "year_completed", "materials", "architectural_style", "historical_overview", "cultural_impact", "famous_for"
+        - Do not output any text outside of JSON.
+        """
 
-- Zero Repetition: Do not repeat any fact, figure, or description across different sections.
-- Conciseness: Use clear, efficient, and engaging language. Avoid fluff and redundancy.
-- Deduction: Base your analysis on visual cues from the image and your encyclopedic knowledge. Omit any numbered line (e.g., Year Completed, Materials) if the information cannot be reasonably inferred or is not applicable.
-- Structure: Maintain the exact spacing, bolding, and section ordering as shown in the chosen template.
-- **Return the output strictly as a JSON object with keys:**
-  "landmark_name", "location", "year_completed", "materials", "architectural_style", "historical_overview", "cultural_impact", "famous_for"
-- Do not output any text outside of JSON.
-"""
+        # Debugging: Print final unified prompt to verify language-specific prompt
+        print(f"Unified prompt: {unified_prompt}")  # Debug: Check the final prompt
 
         # Initialize the OpenAI model
         llm = ChatOpenAI(
@@ -195,6 +202,7 @@ GLOBAL OUTPUT RULES (Apply to both templates):
 
         # Invoke the model and return the result
         response = llm.invoke([message])
+        print(f"AI response: {response.content}")  # Debug: Check AI response
         return response.content
 
     except Exception as e:

@@ -105,11 +105,6 @@ def process_landmark(image_input, latitude=None, longitude=None, language="Engli
         if not language_prompt:
             raise ValueError(f"Unsupported language: {language}")
 
-        # Debugging: Print language prompt to confirm it's being passed correctly
-        print(f"Using language: {language}")
-        print(f"Language prompt: {language_prompt}")
-        print(f"Address: {address}")
-
         # Construct the dynamic prompt
         unified_prompt = f"""
         {language_prompt}
@@ -182,9 +177,6 @@ def process_landmark(image_input, latitude=None, longitude=None, language="Engli
         - Do not output any text outside of JSON.
         """
 
-        # Debugging: Print final unified prompt to verify language-specific prompt
-        print(f"Unified prompt: {unified_prompt}")  # Debug: Check the final prompt
-
         # Initialize the OpenAI model
         llm = ChatOpenAI(
             model="gpt-4.1",
@@ -210,10 +202,7 @@ def process_landmark(image_input, latitude=None, longitude=None, language="Engli
             print(f"Error parsing AI response: {e}")
             analysis = {}
 
-        # Debugging: Print parsed AI response
-        print(f"Parsed AI response: {analysis}")
-
-        # Return the response content
+        # Return the parsed AI response
         return analysis
 
     except Exception as e:

@@ -202,8 +202,19 @@ def process_landmark(image_input, latitude=None, longitude=None, language="Engli
 
         # Invoke the model and return the result
         response = llm.invoke([message])
-        print(f"AI response: {response.content}")  # Debug: Check AI response
-        return response.content
+
+        # Parse the AI response if it's in string format
+        try:
+            analysis = json.loads(response.content)  # Parse the string response to a dictionary
+        except json.JSONDecodeError as e:
+            print(f"Error parsing AI response: {e}")
+            analysis = {}
+
+        # Debugging: Print parsed AI response
+        print(f"Parsed AI response: {analysis}")
+
+        # Return the response content
+        return analysis
 
     except Exception as e:
         print(f"Failed to process landmark: {str(e)}")

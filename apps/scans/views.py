@@ -43,6 +43,7 @@ class ScanCreateView(generics.GenericAPIView):
         image = request.FILES.get("image")
         latitude = request.data.get("latitude")
         longitude = request.data.get("longitude")
+        language = request.data.get("language", "English")  # Default to English if no language provided
         source = request.data.get("source", "camera")  # Default to "camera" if not provided
         if not image:
             return Response({"detail": "No image uploaded"}, status=status.HTTP_400_BAD_REQUEST)
@@ -78,8 +79,8 @@ class ScanCreateView(generics.GenericAPIView):
             image_bytes.write(chunk)
         image_bytes.seek(0)
 
-        # Run AI process
-        analysis = process_landmark(image_bytes, latitude=latitude, longitude=longitude)
+        # Run AI process with selected language
+        analysis = process_landmark(image_bytes, latitude=latitude, longitude=longitude, language=language)
         if not analysis:
             return Response({"detail": "AI processing failed"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -123,6 +124,7 @@ class ScanCreateView(generics.GenericAPIView):
 
         serializer = ScanSerializer(scan)
         return Response({"scan": serializer.data, "analysis": analysis}, status=status.HTTP_201_CREATED)
+
 
 class ScanHistoryView(generics.ListAPIView):
     """

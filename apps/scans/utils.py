@@ -1,4 +1,3 @@
-# apps/scans/utils.py
 import os
 import json
 import base64
@@ -12,8 +11,20 @@ from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 # Load environment variables
 load_dotenv()
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY not found in environment variables.")
+
+# Function to encode the image to a base64 string
+def get_base64_encoded_image(image_input):
+    if isinstance(image_input, str):
+        with open(image_input, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    elif isinstance(image_input, BytesIO):
+        image_input.seek(0)
+        return base64.b64encode(image_input.read()).decode('utf-8')
+    else:
+        raise ValueError("Unsupported image input type. Must be path or BytesIO.")
 
 # -----------------------------
 # Geo helper
@@ -30,22 +41,9 @@ def get_location_from_coords(latitude, longitude):
     except Exception as e:
         return f"Error: {str(e)}"
 
-
 # -----------------------------
-# Encode image
-# -----------------------------
-def get_base64_encoded_image(image_input):
-    if isinstance(image_input, str):
-        with open(image_input, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode('utf-8')
-    elif isinstance(image_input, BytesIO):
-        image_input.seek(0)
-        return base64.b64encode(image_input.read()).decode('utf-8')
-    else:
-        raise ValueError("Unsupported image input type. Must be path or BytesIO.")
-
-
 # Language-specific templates for headings
+# -----------------------------
 HEADINGS_TRANSLATION = {
     "English": {
         "location": "Location", "year_completed": "Year Completed", "materials": "Materials",
@@ -68,7 +66,9 @@ HEADINGS_TRANSLATION = {
     }
 }
 
-# Function to fetch language prompt
+# -----------------------------
+# Language prompt function
+# -----------------------------
 def get_language_prompt(language):
     """Returns the appropriate prompt based on language."""
     language_prompts = {
@@ -76,33 +76,34 @@ def get_language_prompt(language):
         "Chinese": "请用中文回答。",
         "Traditional Chinese": "請用繁體中文回答。"
     }
-    return language_prompts.get(language, "Please respond in English.")
-
+    return language_prompts.get(language, None)
 
 # -----------------------------
 # Landmark analyzer
 # -----------------------------
-def process_landmark(image_input, latitude=None, longitude=None, language="English", temperature=0.3):
+def process_landmark(image_input, latitude=None, longitude=None, language="English", temperature=0.0):
     """
     Process the landmark image using OpenAI API and return parsed JSON dict.
     """
     try:
-        if isinstance(image_input, str) and not os.path.exists(image_input):
-            raise FileNotFoundError(f"Image file '{image_input}' not found.")
+        # Get the location address using latitude and longitude
+        address = get_location_from_coords(latitude, longitude)
+        if address in ["Location not found", "Geocoding error"]:
+            print(f"Failed to fetch address. {address}")
+            return None
 
-        address = None
-        if latitude is not None and longitude is not None:
-            address = get_location_from_coords(latitude, longitude)
-            if address.startswith("Geocoding error") or address == "Location not found":
-                address = None
-
+        # Validate image file existence
         base64_image = get_base64_encoded_image(image_input)
 
+        # Validate language
         headings = HEADINGS_TRANSLATION.get(language)
         if not headings:
             raise ValueError(f"Unsupported language: {language}")
 
+        # Fetch language-specific prompt
         language_prompt = get_language_prompt(language)
+        if not language_prompt:
+            raise ValueError(f"Unsupported language: {language}")
 
         # Construct the dynamic prompt
         unified_prompt = f"""
@@ -162,7 +163,7 @@ TEMPLATE B: For a General Place of Interest
 [{headings["known_for"]}]:
 [1. Primary claim to fame]
 
-[2. Secondary distinct reason or fact]
+[2. Secondary distinct feature or fact]
 
 [3. Tertiary distinct feature or fact]
 
@@ -171,12 +172,15 @@ GLOBAL OUTPUT RULES (Apply to both templates):
 - Zero Repetition: Do not repeat any fact, figure, or description across different sections.
 - Conciseness: Use clear, efficient, and engaging language. Avoid fluff and redundancy.
 - Deduction: Base your analysis on visual cues from the image and your encyclopedic knowledge. Omit any numbered line (e.g., Year Completed, Materials) if the information cannot be reasonably inferred or is not applicable.
-- Structure: Maintain the exact spacing, bolding, and section ordering as shown in the chosen template. Begin the response immediately with the landmark/place name.
+- Structure: Maintain the exact spacing, bolding, and section ordering as shown in the chosen template.
+- **Return the output strictly as a JSON object with keys:**
+  "landmark_name", "location", "year_completed", "materials", "architectural_style", "historical_overview", "cultural_impact", "famous_for"
+- Do not output any text outside of JSON.
 """
 
-        # Initialize the LangChain OpenAI model
+        # Initialize the OpenAI model
         llm = ChatOpenAI(
-            model="gpt-4o",  # Use a model that supports vision
+            model="gpt-4.1",
             temperature=temperature,
             openai_api_key=OPENAI_API_KEY
         )
@@ -192,6 +196,7 @@ GLOBAL OUTPUT RULES (Apply to both templates):
         # Invoke the model and return the result
         response = llm.invoke([message])
         return response.content
+
     except Exception as e:
         print(f"Failed to process landmark: {str(e)}")
         return None

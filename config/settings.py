@@ -30,6 +30,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://ppp7rljm-8000.inc1.devtunnels.ms/",
     "http://localhost:3143",
     "http://10.10.13.2:3143",
+    "https://tourapi.dailo.app",
 ]
 
 # -----------------------

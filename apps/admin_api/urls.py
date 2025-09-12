@@ -12,6 +12,10 @@ from .views import (
     AdminLoginOTPVerifyView,
     UserActivityView,
     UserActivityDeleteView,
+    ManageUsersView,
+    ManageUserSubscriptionView,
+    ManageUserBanView,
+    ManageUserUnbanView,
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -34,4 +38,10 @@ urlpatterns = [
     # User Activity
     path("user-activity/", UserActivityView.as_view(), name="user_activity"),
     path("user-activity/<int:id>/", UserActivityDeleteView.as_view(), name="user_activity_delete"),
+
+    # Manage Users
+    path("manage-users/", ManageUsersView.as_view(), name="manage_users"),
+    path("manage-users/<int:id>/subscription/", ManageUserSubscriptionView.as_view(), name="manage_user_subscription"),
+    path("manage-users/<int:id>/ban/", ManageUserBanView.as_view(), name="manage_user_ban"),
+    path("manage-users/<int:id>/unban/", ManageUserUnbanView.as_view(), name="manage_user_unban"),
 ]

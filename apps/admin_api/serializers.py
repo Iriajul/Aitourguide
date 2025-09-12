@@ -5,6 +5,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.users.models import User
 from apps.scans.models import Scan
 from django.utils.timesince import timesince
+from django.utils import timezone
 
 # -----------------------------
 # Admin Login
@@ -170,3 +171,56 @@ class UserActivitySerializer(serializers.ModelSerializer):
     def get_activity_type(self, obj):
         """Map source to activity type."""
         return "Clicked" if obj.source == "camera" else "Upload"
+    
+    # -----------------------------
+# Manage Users Serializers
+# -----------------------------
+class ManageUserSubscriptionSerializer(serializers.Serializer):
+    duration = serializers.ChoiceField(choices=[
+        '1h', '6h', '12h', '24h', '2d', '5d', '7d', '10d', 'lifetime'
+    ])
+
+class ManageUserBanSerializer(serializers.Serializer):
+    duration = serializers.ChoiceField(choices=[
+        '1h', '6h', '12h', '24h', '2d', '5d', '7d', '10d'
+    ])
+
+class ManageUserUnbanSerializer(serializers.Serializer):
+    pass
+
+class ManageUserSerializer(serializers.ModelSerializer):
+    user = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    subscription = serializers.SerializerMethodField()
+    last_active = serializers.SerializerMethodField()
+    actions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['id', 'user', 'status', 'subscription', 'email', 'last_active', 'actions']
+
+    def get_user(self, obj):
+        return {
+            'username': obj.username,
+            'avatar': obj.profile_picture_url
+        }
+
+    def get_status(self, obj):
+        if obj.ban_expiry and timezone.now() < obj.ban_expiry:
+            return {'text': 'Inactive', 'badge': 'red'}
+        return {'text': 'Active', 'badge': 'green'}
+
+    def get_subscription(self, obj):
+        return {'text': 'Premium' if obj.is_active_premium else 'Free', 'badge': 'green'}
+
+    def get_last_active(self, obj):
+        if obj.last_activity_time:
+            return timesince(obj.last_activity_time) + ' ago'
+        return 'Never'
+
+    def get_actions(self, obj):
+        return {
+            'edit_id': obj.id,
+            'can_ban': obj.is_active,
+            'can_unban': obj.ban_expiry and timezone.now() < obj.ban_expiry
+        }

@@ -467,3 +467,137 @@ class UserActivityDeleteView(generics.DestroyAPIView):
             {"message": f"Scan with id {scan_id} deleted successfully."},
             status=status.HTTP_200_OK
         )
+
+
+# ---------------- MANAGE USERS ----------------
+class ManageUsersPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "limit"
+    max_page_size = 100
+
+class ManageUsersView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+    serializer_class = None
+    pagination_class = ManageUsersPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return User.objects.none()
+
+        queryset = User.objects.all()
+
+        # Search by username or email
+        search_query = self.request.query_params.get("search", "").lower()
+        if search_query:
+            queryset = queryset.filter(
+                models.Q(username__icontains=search_query) |
+                models.Q(email__icontains=search_query)
+            )
+
+        # Filter by subscription
+        subscription = self.request.query_params.get("subscription", "all").lower()
+        if subscription == "premium":
+            queryset = queryset.filter(is_active_premium=True)
+        elif subscription == "free":
+            queryset = queryset.filter(is_active_premium=False)
+
+        # Filter by status
+        status = self.request.query_params.get("status", "all").lower()
+        if status == "active":
+            queryset = queryset.filter(ban_expiry__isnull=True) | queryset.filter(ban_expiry__lt=timezone.now())
+        elif status == "inactive":
+            queryset = queryset.filter(ban_expiry__gt=timezone.now())
+
+        return queryset.order_by("-last_activity_time")
+
+    def list(self, request, *args, **kwargs):
+        from .serializers import ManageUserSerializer
+        self.serializer_class = ManageUserSerializer
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        results = serializer.data
+
+        total_results = queryset.count()
+        search_query = request.query_params.get("search", "")
+        subscription_filter = request.query_params.get("subscription", "all")
+        status_filter = request.query_params.get("status", "all")
+        paginator = self.paginator
+        if hasattr(paginator, 'page'):
+            page_number = paginator.page.number
+            page_size = paginator.page_size
+            start_idx = (page_number - 1) * page_size + 1
+            end_idx = start_idx + len(results) - 1
+            message = f"Showing {start_idx} to {end_idx} of {total_results} records"
+        else:
+            message = f"Showing {len(results)} of {total_results} records"
+
+        if search_query:
+            message += f" for '{search_query}'"
+        if subscription_filter != "all":
+            message += f" ({subscription_filter.capitalize()} subscription)"
+        if status_filter != "all":
+            message += f" ({status_filter.capitalize()} users)"
+
+        return self.get_paginated_response({
+            "message": message,
+            "results": results
+        })
+
+class ManageUserSubscriptionView(generics.UpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+
+    def patch(self, request, *args, **kwargs):
+        from .serializers import ManageUserSubscriptionSerializer
+        user = self.get_object()
+        if not (request.user.is_staff or request.user.is_superuser or request.user.role == "admin"):
+            return Response({"detail": "Access denied."}, status=403)
+
+        serializer = ManageUserSubscriptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        duration = serializer.validated_data["duration"]
+        user.set_subscription_duration(duration)
+        return Response({"detail": f"Subscription updated to {duration} for {user.username}."}, status=200)
+
+    def get_object(self):
+        return User.objects.get(id=self.kwargs["id"])
+
+class ManageUserBanView(generics.UpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+
+    def patch(self, request, *args, **kwargs):
+        from .serializers import ManageUserBanSerializer
+        user = self.get_object()
+        if not (request.user.is_staff or request.user.is_superuser or request.user.role == "admin"):
+            return Response({"detail": "Access denied."}, status=403)
+
+        serializer = ManageUserBanSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        duration = serializer.validated_data["duration"]
+        user.set_ban_duration(duration)
+        return Response({"detail": f"User {user.username} banned for {duration}."}, status=200)
+
+    def get_object(self):
+        return User.objects.get(id=self.kwargs["id"])
+
+class ManageUserUnbanView(generics.UpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+
+    def patch(self, request, *args, **kwargs):
+        user = self.get_object()
+        if not (request.user.is_staff or request.user.is_superuser or request.user.role == "admin"):
+            return Response({"detail": "Access denied."}, status=403)
+
+        from .serializers import ManageUserUnbanSerializer
+        serializer = ManageUserUnbanSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user.unban()
+        return Response({"detail": f"User {user.username} unbanned."}, status=200)
+
+    def get_object(self):
+        return User.objects.get(id=self.kwargs["id"])

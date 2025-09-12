@@ -66,6 +66,9 @@ class User(AbstractUser):
     total_premium_days = models.FloatField(default=0)  # Track subscription days as fractional
     is_active_premium = models.BooleanField(default=False)  # Quick flag for premium users
 
+    # Ban field
+    ban_expiry = models.DateTimeField(blank=True, null=True)
+
     # Use email for authentication
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
@@ -170,3 +173,48 @@ class User(AbstractUser):
             self.total_premium_days = 0
 
         self.save(update_fields=["is_active_premium", "total_premium_days"])
+
+    def set_subscription_duration(self, duration_str):
+        """
+        Set subscription duration for the user without payment (admin privilege).
+        duration_str: '1h', '6h', '12h', '24h', '2d', '5d', '7d', '10d', 'lifetime'
+        """
+        Subscription = apps.get_model('payments', 'Subscription')
+        now = timezone.now()
+        try:
+            sub, created = Subscription.objects.get_or_create(user=self)
+            if duration_str == "lifetime":
+                sub.activate_boost_plan("Lifetime Boost", 0.0, None)  # No end time for lifetime
+            else:
+                hours = {
+                    '1h': 1, '6h': 6, '12h': 12, '24h': 24,
+                    '2d': 48, '5d': 120, '7d': 168, '10d': 240
+                }[duration_str]
+                duration = timedelta(hours=hours)
+                sub.activate_boost_plan(f"{hours}h Boost", 0.0, duration)  # Price set to 0 for admin
+            self.recalc_premium_status()
+        except Exception as e:
+            raise ValueError(f"Invalid duration or subscription error: {e}")
+
+    def set_ban_duration(self, duration_str):
+        """
+        Set ban duration for the user.
+        duration_str: '1h', '6h', '12h', '24h', '2d', '5d', '7d', '10d'
+        """
+        hours = {
+            '1h': 1, '6h': 6, '12h': 12, '24h': 24,
+            '2d': 48, '5d': 120, '7d': 168, '10d': 240
+        }
+        if duration_str not in hours:
+            raise ValueError("Invalid ban duration")
+        self.ban_expiry = timezone.now() + timedelta(hours=hours[duration_str])
+        self.is_active = False
+        self.save(update_fields=["ban_expiry", "is_active"])
+
+    def unban(self):
+        """
+        Unban the user by clearing ban_expiry and setting is_active to True.
+        """
+        self.ban_expiry = None
+        self.is_active = True
+        self.save(update_fields=["ban_expiry", "is_active"])

@@ -81,7 +81,7 @@ def get_language_prompt(language):
 # -----------------------------
 # Landmark analyzer
 # -----------------------------
-def process_landmark(image_input, latitude=None, longitude=None, language="English", temperature=0.0):
+def process_landmark(image_input, latitude=None, longitude=None, language="English", temperature=0.3):
     """
     Process the landmark image using OpenAI API and return parsed JSON dict.
     """

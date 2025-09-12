@@ -407,19 +407,12 @@ class UserActivityView(generics.ListAPIView):
         if search_query:
             queryset = queryset.filter(user__username__icontains=search_query)
 
-        # Filter by period
-        period = self.request.query_params.get("period", "all").lower()
-        now = timezone.now()
-        if period == "weekly":
-            start_date = now - timedelta(weeks=1)
-        elif period == "monthly":
-            start_date = now - timedelta(days=30)
-        elif period == "yearly":
-            start_date = now - timedelta(days=365)
-        else:
-            start_date = None
-        if start_date:
-            queryset = queryset.filter(created_at__gte=start_date)
+        # Filter by activity type
+        activity_type = self.request.query_params.get("type", "all").lower()
+        if activity_type == "clicked":
+            queryset = queryset.filter(source="camera")
+        elif activity_type == "upload":
+            queryset = queryset.filter(source="gallery")
 
         return queryset.order_by("-created_at")
 
@@ -428,16 +421,26 @@ class UserActivityView(generics.ListAPIView):
         self.serializer_class = UserActivitySerializer
         queryset = self.get_queryset()
         page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page, many=True)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
         results = serializer.data
 
         total_results = queryset.count()
-        # Adjust message calculation to handle pagination correctly
-        message = None
-        if page is not None and hasattr(page, 'number'):
-            message = f"Showing {len(results)} to {len(results) + (page.number - 1) * self.pagination_class.page_size} of {total_results} records"
-        elif total_results > 0:
+        search_query = request.query_params.get("search", "")
+        type_filter = request.query_params.get("type", "all")
+        paginator = self.paginator
+        if hasattr(paginator, 'page'):
+            page_number = paginator.page.number
+            page_size = paginator.page_size
+            start_idx = (page_number - 1) * page_size + 1
+            end_idx = start_idx + len(results) - 1
+            message = f"Showing {start_idx} to {end_idx} of {total_results} records"
+        else:
             message = f"Showing {len(results)} of {total_results} records"
+
+        if search_query:
+            message += f" for '{search_query}'"
+        if type_filter != "all":
+            message += f" ({type_filter.capitalize()} activities)"
 
         return self.get_paginated_response({
             "message": message,

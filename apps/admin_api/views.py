@@ -3,18 +3,23 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
-from django.db.models import Count
+from django.db.models import Count, Sum, Q
 from django.db import models
+from django.db.models.functions import TruncDay, TruncWeek, TruncMonth, ExtractMonth
+import calendar
+from django.utils.dateparse import parse_date, parse_datetime
 
-from rest_framework import status, permissions, generics
+from rest_framework import status, permissions, generics, viewsets, pagination
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.pagination import PageNumberPagination
-
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from apps.users.models import User
-from apps.payments.models import Subscription
+from apps.payments.models import Subscription, Payment, SubscriptionPlan
 from apps.scans.models import Scan
+from apps.users.permissions import IsAdminRole  # Assuming this exists
+from .serializers import SubscriptionPlanSerializer, SubscriptionPlanCreateSerializer, UserEarningsSerializer, AdminProfileSerializer, AdminPasswordChangeSerializer, AdminLogoutSerializer
 
 RESET_COOKIE_NAME = "admin_reset_email"
 RESET_COOKIE_MAX_AGE = 10 * 60  # 10 minutes
@@ -97,13 +102,44 @@ class AdminLoginOTPVerifyView(generics.GenericAPIView):
         )
 
 
+# ---------------- ADMIN PROFILE ----------------
+class AdminProfileView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+    serializer_class = AdminProfileSerializer
+
+    def get_object(self):
+        return self.request.user
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
+# ---------------- ADMIN PASSWORD CHANGE ----------------
+class AdminPasswordChangeView(generics.GenericAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+    serializer_class = AdminPasswordChangeSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        # Invalidate all existing tokens for this user
+        OutstandingToken.objects.filter(user=user).delete()
+        user.set_password(serializer.validated_data['new_password'])
+        user.save()
+        return Response({"detail": "Password updated successfully."}, status=status.HTTP_200_OK)
+    
 # ---------------- LOGOUT ----------------
 class AdminLogoutView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
 
     def post(self, request):
-        from .serializers import AdminLogoutSerializer
         serializer = AdminLogoutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         refresh_token = serializer.validated_data["refresh"]
@@ -117,7 +153,7 @@ class AdminLogoutView(generics.GenericAPIView):
 
 # ---------------- DASHBOARD (JWT Protected) ----------------
 class AdminDashboardView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
 
     def get(self, request):
@@ -141,7 +177,7 @@ class AdminDashboardView(generics.GenericAPIView):
 
 # ---------------- ADMIN OVERVIEW ----------------
 class AdminOverviewView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
 
     def get(self, request):
@@ -272,7 +308,7 @@ class AdminOverviewView(generics.GenericAPIView):
             "premium_insights": {
                 "active_premium_user": active_premium_user,
                 "renewal_rate": renewal_rate,
-                "churn_rate": churn_rate,   
+                "churn_rate": churn_rate,
             },
             "search_frequency": search_frequency
         }
@@ -282,6 +318,245 @@ class AdminOverviewView(generics.GenericAPIView):
             "period": period,
             "overview": overview
         })
+
+
+# ---------------- ANALYTICS ----------------
+class ReturningUsersView(generics.GenericAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+
+    def get(self, request):
+        user = request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return Response({"detail": "Access denied."}, status=403)
+
+        period = request.query_params.get("period", "monthly").lower()
+
+        now = timezone.now()
+        if period == "weekly":
+            start = now - timedelta(days=7)
+        elif period == "yearly":
+            start = now - timedelta(days=365)
+        else:  # monthly
+            start = now - timedelta(days=30)
+
+        # Returning Users (no custom date range)
+        returning_users = (
+            User.objects.filter(scans__created_at__gte=start, scans__created_at__lte=now)
+            .annotate(scan_count=Count("scans"))
+            .filter(scan_count__gt=1)
+        )
+        if period == "weekly":
+            returning_users = (
+                returning_users
+                .annotate(day=TruncDay("scans__created_at"))
+                .values("day")
+                .annotate(count=Count("id", distinct=True))
+                .order_by("day")
+            )
+        elif period == "monthly":
+            returning_users = (
+                returning_users
+                .annotate(week=TruncWeek("scans__created_at"))
+                .values("week")
+                .annotate(count=Count("id", distinct=True))
+                .order_by("week")
+            )
+        else:  # yearly
+            returning_users = (
+                returning_users
+                .annotate(month=TruncMonth("scans__created_at"))
+                .values("month")
+                .annotate(count=Count("id", distinct=True))
+                .order_by("month")
+            )
+
+        # Convert to desired format
+        returning_users_data = {
+            "weekly": [],
+            "monthly": [],
+            "yearly": []
+        }
+        for item in returning_users:
+            if period == "weekly":
+                day_name = item["day"].strftime("%a")  # e.g., "Sun", "Mon"
+                returning_users_data["weekly"].append({"label": day_name, "count": item["count"]})
+            elif period == "monthly":
+                week_num = (item["week"].day - 1) // 7 + 1  # Approximate week number (1-4)
+                week_name = f"Week{week_num}"
+                returning_users_data["monthly"].append({"label": week_name, "count": item["count"]})
+            else:  # yearly
+                month_name = calendar.month_abbr[item["month"].month]  # e.g., "Sep", "Aug"
+                returning_users_data["yearly"].append({"label": month_name, "count": item["count"]})
+
+        data = returning_users_data
+
+        print("Data before serialization:", data)
+
+        from .serializers import ReturningUsersSerializer
+        serializer = ReturningUsersSerializer(data)
+        return Response(serializer.data)
+
+class RevenueGrowthView(generics.GenericAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+
+    def get(self, request):
+        user = request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return Response({"detail": "Access denied."}, status=403)
+
+        # Get the selected year, default to current year
+        selected_year = request.query_params.get("year")
+        current_year = timezone.now().year
+        if selected_year:
+            try:
+                selected_year = int(selected_year)
+                if selected_year < 2025 or selected_year > 2030:
+                    return Response({"detail": "Year must be between 2025 and 2030."}, status=400)
+            except ValueError:
+                return Response({"detail": "Invalid year format. Use YYYY."}, status=400)
+        else:
+            selected_year = current_year  # Default to current running year (e.g., 2025 now, 2026 next year)
+
+        # Generate start and end dates for the selected year
+        start_date = timezone.make_aware(timezone.datetime(selected_year, 1, 1), timezone.get_current_timezone())
+        end_date = timezone.make_aware(timezone.datetime(selected_year, 12, 31, 23, 59, 59), timezone.get_current_timezone())
+
+        # Fetch revenue data for the selected year
+        revenue_data = (
+            Payment.objects.filter(payment_date__gte=start_date, payment_date__lte=end_date)
+            .annotate(month=TruncMonth("payment_date"))
+            .values("month")
+            .annotate(total=Sum("amount"))
+            .order_by("month")
+        )
+        revenue_map = {item["month"]: float(item["total"] or 0) for item in revenue_data}
+
+        # Generate monthly breakdown with zeros
+        revenue_growth = [
+            {"month": calendar.month_abbr[month], "total": revenue_map.get(timezone.make_aware(timezone.datetime(selected_year, month, 1), timezone.get_current_timezone()), 0.0)}
+            for month in range(1, 13)
+        ]
+
+        # Calculate total revenue for the year
+        total_revenue = float(
+            Payment.objects.filter(payment_date__gte=start_date, payment_date__lte=end_date)
+            .aggregate(total=Sum("amount"))["total"] or 0
+        )
+
+        data = {
+            "revenue_growth": revenue_growth,
+            "total_revenue": total_revenue
+        }
+
+        print("Data before serialization:", data)
+
+        from .serializers import RevenueGrowthSerializer
+        serializer = RevenueGrowthSerializer(data)
+        return Response(serializer.data)
+
+class RevenueLeaderboardView(generics.GenericAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+
+    def get(self, request):
+        user = request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return Response({"detail": "Access denied."}, status=403)
+
+        period = request.query_params.get("period", "monthly").lower()
+        leaderboard_count = int(request.query_params.get("leaderboard_count", 3))
+
+        now = timezone.now()
+        if period == "weekly":
+            start = now - timedelta(days=7)
+        elif period == "yearly":
+            start = now - timedelta(days=365)
+        else:  # monthly
+            start = now - timedelta(days=30)
+
+        print(f"Period: {period}, Start Date: {start}, Now: {now}")
+
+        # Revenue Leaderboard
+        leaderboard = (
+            User.objects.annotate(
+                total_revenue=Sum("payments__amount", filter=Q(payments__payment_date__gte=start, payments__payment_date__lte=now))
+            )
+            .filter(total_revenue__isnull=False)
+            .order_by("-total_revenue")[:leaderboard_count]
+            .values("username", "profile_picture_url", "total_revenue")
+        )
+        print("Annotated Query:", User.objects.annotate(total_revenue=Sum("payments__amount", filter=Q(payments__payment_date__gte=start, payments__payment_date__lte=now))).query)
+        total_revenue = float(
+            Payment.objects.filter(payment_date__gte=start, payment_date__lte=now)
+            .aggregate(total=Sum("amount"))["total"] or 0
+        )
+        total_users = User.objects.count()
+        avg_revenue_per_user = total_revenue / total_users if total_users else 0
+        last_month_revenue = float(
+            Payment.objects.filter(payment_date__gte=now - timedelta(days=30))
+            .aggregate(total=Sum("amount"))["total"] or 0
+        )
+        prev_month_revenue = float(
+            Payment.objects.filter(
+                payment_date__gte=now - timedelta(days=60), payment_date__lt=now - timedelta(days=30)
+            )
+            .aggregate(total=Sum("amount"))["total"] or 0
+        )
+        growth_percentage = (
+            ((last_month_revenue - prev_month_revenue) / prev_month_revenue * 100)
+            if prev_month_revenue
+            else 0
+        ) if last_month_revenue or prev_month_revenue else 0
+
+        data = {
+            "top_users": [
+                {"username": item["username"], "avatar_url": item["profile_picture_url"], "revenue": float(item["total_revenue"] if item["total_revenue"] is not None else 0)}
+                for item in leaderboard
+            ],
+            "average_revenue_per_user": avg_revenue_per_user,
+            "growth_percentage": growth_percentage,
+        }
+
+        print("Data before serialization:", data)
+
+        from .serializers import RevenueLeaderboardSerializer
+        serializer = RevenueLeaderboardSerializer(data)
+        return Response(serializer.data)
+
+class UserStatusDistributionView(generics.GenericAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+
+    def get(self, request):
+        user = request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return Response({"detail": "Access denied."}, status=403)
+
+        # User Status Distribution
+        user_status = {
+            "total": User.objects.count(),
+            "free_count": User.objects.filter(is_active_premium=False).count(),
+            "premium_count": User.objects.filter(is_active_premium=True).count(),
+            "free_percentage": 0,
+            "premium_percentage": 0,
+        }
+        if user_status["total"] > 0:
+            user_status["free_percentage"] = round(
+                (user_status["free_count"] / user_status["total"]) * 100, 2
+            )
+            user_status["premium_percentage"] = round(
+                (user_status["premium_count"] / user_status["total"]) * 100, 2
+            )
+
+        data = user_status
+
+        print("Data before serialization:", data)
+
+        from .serializers import UserStatusDistributionSerializer
+        serializer = UserStatusDistributionSerializer(data)
+        return Response(serializer.data)
 
 
 # ---------------- FORGOT PASSWORD ----------------
@@ -385,12 +660,12 @@ class AdminPasswordResetView(generics.GenericAPIView):
 
 # ---------------- USER ACTIVITY ----------------
 class UserActivityPagination(PageNumberPagination):
-    page_size = 10
+    page_size = 7
     page_size_query_param = "limit"
     max_page_size = 100
 
 class UserActivityView(generics.ListAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
     serializer_class = None  # Will be set by importing serializer later
     pagination_class = UserActivityPagination
@@ -449,7 +724,7 @@ class UserActivityView(generics.ListAPIView):
 
 
 class UserActivityDeleteView(generics.DestroyAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
     lookup_field = "id"
 
@@ -471,12 +746,12 @@ class UserActivityDeleteView(generics.DestroyAPIView):
 
 # ---------------- MANAGE USERS ----------------
 class ManageUsersPagination(PageNumberPagination):
-    page_size = 10
+    page_size = 7
     page_size_query_param = "limit"
     max_page_size = 100
 
 class ManageUsersView(generics.ListAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
     serializer_class = None
     pagination_class = ManageUsersPagination
@@ -510,6 +785,13 @@ class ManageUsersView(generics.ListAPIView):
         elif status == "inactive":
             queryset = queryset.filter(ban_expiry__gt=timezone.now())
 
+        # Filter by ban status
+        banned = self.request.query_params.get("banned", "all").lower()
+        if banned == "true":
+            queryset = queryset.filter(ban_expiry__gt=timezone.now())
+        elif banned == "false":
+            queryset = queryset.filter(ban_expiry__isnull=True) | queryset.filter(ban_expiry__lt=timezone.now())
+
         return queryset.order_by("-last_activity_time")
 
     def list(self, request, *args, **kwargs):
@@ -524,6 +806,7 @@ class ManageUsersView(generics.ListAPIView):
         search_query = request.query_params.get("search", "")
         subscription_filter = request.query_params.get("subscription", "all")
         status_filter = request.query_params.get("status", "all")
+        banned_filter = request.query_params.get("banned", "all")
         paginator = self.paginator
         if hasattr(paginator, 'page'):
             page_number = paginator.page.number
@@ -540,6 +823,8 @@ class ManageUsersView(generics.ListAPIView):
             message += f" ({subscription_filter.capitalize()} subscription)"
         if status_filter != "all":
             message += f" ({status_filter.capitalize()} users)"
+        if banned_filter != "all":
+            message += f" (Banned: {banned_filter.capitalize()})"
 
         return self.get_paginated_response({
             "message": message,
@@ -547,7 +832,7 @@ class ManageUsersView(generics.ListAPIView):
         })
 
 class ManageUserSubscriptionView(generics.UpdateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
 
     def patch(self, request, *args, **kwargs):
@@ -566,7 +851,7 @@ class ManageUserSubscriptionView(generics.UpdateAPIView):
         return User.objects.get(id=self.kwargs["id"])
 
 class ManageUserBanView(generics.UpdateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
 
     def patch(self, request, *args, **kwargs):
@@ -585,14 +870,13 @@ class ManageUserBanView(generics.UpdateAPIView):
         return User.objects.get(id=self.kwargs["id"])
 
 class ManageUserUnbanView(generics.UpdateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminRole]
     authentication_classes = [JWTAuthentication]
 
     def patch(self, request, *args, **kwargs):
         user = self.get_object()
-        if not (request.user.is_staff or request.user.is_superuser or request.user.role == "admin"):
+        if not (request.user.is_staff or user.is_superuser or request.user.role == "admin"):
             return Response({"detail": "Access denied."}, status=403)
-
         from .serializers import ManageUserUnbanSerializer
         serializer = ManageUserUnbanSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -601,3 +885,332 @@ class ManageUserUnbanView(generics.UpdateAPIView):
 
     def get_object(self):
         return User.objects.get(id=self.kwargs["id"])
+
+class ManageUserDeleteView(generics.DestroyAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+
+    def delete(self, request, *args, **kwargs):
+        user = self.get_object()
+        if not (request.user.is_staff or request.user.is_superuser or request.user.role == "admin"):
+            return Response({"detail": "Access denied."}, status=403)
+        username = user.username
+        user.delete()
+        return Response({"detail": f"User {username} deleted."}, status=200)
+
+    def get_object(self):
+        return User.objects.get(id=self.kwargs["id"])
+
+
+# ---------------- NON-PAGINATED SUBSCRIPTION PLANS FOR DROPDOWN ----------------
+class SubscriptionPlansAllView(generics.ListAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+    serializer_class = SubscriptionPlanSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return SubscriptionPlan.objects.none()
+        return SubscriptionPlan.objects.all().order_by('name')
+
+
+# ---------------- PAYMENT RECORDS ----------------
+class PaymentRecordPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "limit"
+    max_page_size = 100
+
+class PaymentRecordView(generics.ListAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+    serializer_class = None
+    pagination_class = PaymentRecordPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return Payment.objects.none()
+
+        queryset = Payment.objects.select_related('user', 'subscription__plan').all()
+
+        # Search by username or email
+        search_query = self.request.query_params.get("search", "").lower()
+        if search_query:
+            queryset = queryset.filter(
+                Q(user__username__icontains=search_query) |
+                Q(user__email__icontains=search_query)
+            )
+
+        # Filter by subscription plan name dynamically
+        subscription_plan = self.request.query_params.get("subscription_plan", "").strip().lower()
+        if subscription_plan and subscription_plan != "all":
+            queryset = queryset.filter(subscription__plan__name__iexact=subscription_plan)
+
+        # Filter by subscription type
+        subscription_type = self.request.query_params.get("subscription", "all").lower()
+        if subscription_type != "all":
+            queryset = queryset.filter(subscription__plan_type=subscription_type)
+
+        # Filter by payment status (if you have a status field)
+        status = self.request.query_params.get("status", "all").lower()
+        if status != "all":
+            queryset = queryset.filter(status=status)
+
+        # Filter by date range
+        start_date = self.request.query_params.get("start_date")
+        end_date = self.request.query_params.get("end_date")
+        if start_date:
+            try:
+                queryset = queryset.filter(payment_date__gte=parse_date(start_date))
+            except ValueError:
+                pass
+        if end_date:
+            try:
+                queryset = queryset.filter(payment_date__lte=parse_date(end_date))
+            except ValueError:
+                pass
+
+        # Order by payment_date descending
+        return queryset.order_by("-payment_date")
+
+    def list(self, request, *args, **kwargs):
+        from .serializers import PaymentRecordSerializer
+        self.serializer_class = PaymentRecordSerializer
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        results = serializer.data
+
+        total_results = queryset.count()
+        search_query = request.query_params.get("search", "")
+        subscription_plan_filter = request.query_params.get("subscription_plan", "All")
+        subscription_filter = request.query_params.get("subscription", "all")
+        status_filter = request.query_params.get("status", "all")
+        paginator = self.paginator
+        if hasattr(paginator, 'page'):
+            page_number = paginator.page.number
+            page_size = paginator.page_size
+            start_idx = (page_number - 1) * page_size + 1
+            end_idx = start_idx + len(results) - 1
+            message = f"Showing {start_idx} to {end_idx} of {total_results} records"
+        else:
+            message = f"Showing {len(results)} of {total_results} records"
+
+        if search_query:
+            message += f" for '{search_query}'"
+        if subscription_plan_filter != "All":
+            message += f" (Subscription Plan: '{subscription_plan_filter}')"
+        if subscription_filter != "all":
+            message += f" ({subscription_filter.capitalize()} subscriptions)"
+        if status_filter != "all":
+            message += f" ({status_filter.capitalize()} payments)"
+
+        return self.get_paginated_response({
+            "message": message,
+            "results": results
+        })
+    
+# Payment Record Delete View
+class PaymentRecordDeleteView(generics.DestroyAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+    lookup_field = "id"
+
+    def get_queryset(self):
+        user = self.request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return Payment.objects.none()
+        return Payment.objects.all()
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        payment_id = instance.id
+        if instance.subscription:
+            instance.subscription.delete()  # Delete associated subscription
+        self.perform_destroy(instance)
+        return Response(
+            {"message": f"Payment record with id {payment_id} and associated subscription deleted successfully."},
+            status=status.HTTP_200_OK
+        )
+
+# Payment Record Toggle View (Pause/Play)
+class PaymentRecordToggleView(generics.UpdateAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+    lookup_field = "id"
+
+    def get_queryset(self):
+        user = self.request.user
+        if not (user.is_staff or user.is_superuser or user.role == "admin"):
+            return Payment.objects.none()
+        return Payment.objects.select_related('subscription').all()
+
+    def patch(self, request, *args, **kwargs):
+        from .serializers import PaymentRecordToggleSerializer
+        instance = self.get_object()
+        if not instance.subscription:
+            return Response({"message": "No subscription associated with this payment."}, status=400)
+
+        action = request.data.get("action")
+        if action not in ["pause", "play"]:
+            return Response({"message": "Invalid action. Use 'pause' or 'play'."}, status=400)
+
+        subscription = instance.subscription
+        current_time = timezone.now()
+
+        if action == "pause":
+            if not subscription.is_paused:
+                subscription.is_paused = True
+                subscription.save()
+                return Response({"message": f"Subscription {subscription.id} paused successfully."}, status=200)
+            return Response({"message": "Subscription is already paused."}, status=400)
+
+        elif action == "play":
+            if subscription.is_paused:
+                if current_time < subscription.end_time:
+                    subscription.is_paused = False
+                    # Optional: Adjust end_time if admin provides new_end_time
+                    new_end_time = request.data.get("new_end_time")
+                    if new_end_time:
+                        try:
+                            subscription.end_time = parse_datetime(new_end_time)
+                        except ValueError:
+                            pass
+                    subscription.save()
+                    return Response({"message": f"Subscription {subscription.id} resumed successfully."}, status=200)
+                return Response({"message": "Subscription has expired and cannot be resumed."}, status=400)
+            return Response({"message": "Subscription is not paused."}, status=400)
+
+
+# ---------------- SUBSCRIPTION PLAN MANAGEMENT ----------------
+class SubscriptionPlanPagination(pagination.PageNumberPagination):
+    page_size = 4  # Number of items per page
+    page_size_query_param = 'page_size'  # Allow client to override page size
+    max_page_size = 10  # Maximum page size
+
+class SubscriptionPlanViewSet(viewsets.ModelViewSet):
+    queryset = SubscriptionPlan.objects.all().order_by('id')  # Explicitly order by id
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+    pagination_class = SubscriptionPlanPagination  # Apply pagination
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return SubscriptionPlanCreateSerializer
+        return SubscriptionPlanSerializer
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
+    def perform_update(self, serializer):
+        # Handle pause/play toggle
+        instance = serializer.save()
+        if 'is_paused' in serializer.validated_data:
+            instance.save()
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        self.perform_destroy(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+
+# ---------------- MOST POPULAR PLANS ----------------
+class PopularPlansView(generics.GenericAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+
+    def get(self, request):
+        from .serializers import PopularPlansSerializer
+        from django.db.models import Count
+        from django.utils import timezone
+
+        # Get active subscriptions (boost plans that are active, not expired, and have a valid plan)
+        now = timezone.now()
+        active_subscriptions = Subscription.objects.filter(
+            plan_type="boost",
+            is_active=True,
+            end_time__gt=now,
+            is_paused=False,
+            plan__isnull=False  # Exclude subscriptions with no plan
+        ).select_related('plan')
+
+        total_active_subscribers = active_subscriptions.count()
+
+        if total_active_subscribers == 0:
+            return Response({
+                "most_popular": [],
+                "total_subscribers": 0
+            }, status=status.HTTP_200_OK)
+
+        # Annotate with subscriber count per plan
+        popular_plans = active_subscriptions.values('plan__id', 'plan__name', 'plan__description').annotate(
+            subscriber_count=Count('id')
+        ).order_by('-subscriber_count')[:2]  # Top 2 plans
+
+        # Prepare data for serializer
+        most_popular = []
+        for plan_data in popular_plans:
+            plan_id = plan_data['plan__id']
+            plan_name = plan_data['plan__name']
+            description = plan_data['plan__description'] or f"Popular plan: {plan_name}"  # Fallback if no description
+            count = plan_data['subscriber_count']
+            percentage = (count / total_active_subscribers * 100)
+
+            # Icons (customize based on plan name)
+            icons = {
+                "Lifetime": "lifetime-icon",
+                "10 days": "10days-icon",
+                "24 hours": "24hours-icon",  # Added for 24 hours
+                # Add more as needed
+            }
+            icon = icons.get(plan_name, "default-icon")
+
+            most_popular.append({
+                "name": plan_name,
+                "percentage": f"{int(percentage)}%",
+                "description": description,
+                "icon": icon,
+                "subscriber_count": count
+            })
+
+        data = {
+            "most_popular": most_popular,
+            "total_subscribers": total_active_subscribers
+        }
+
+        serializer = PopularPlansSerializer(data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+# ---------------- USER EARNINGS ----------------
+class UserEarningsPagination(PageNumberPagination):
+    page_size = 4  # Number of items per page
+    page_size_query_param = 'page_size'  # Allow client to override page size
+    max_page_size = 10  # Maximum page size
+
+class UserEarningsView(generics.ListAPIView):
+    permission_classes = [IsAdminRole]
+    authentication_classes = [JWTAuthentication]
+    serializer_class = UserEarningsSerializer
+    pagination_class = UserEarningsPagination
+
+    def get_queryset(self):
+        search_query = self.request.query_params.get('search', '')
+        filter_status = self.request.query_params.get('status', 'all')
+
+        queryset = Payment.objects.select_related('user', 'subscription').all()
+
+        if search_query:
+            queryset = queryset.filter(
+                Q(user__username__icontains=search_query) |
+                Q(user__email__icontains=search_query)
+            )
+
+        if filter_status != 'all':
+            queryset = queryset.filter(user__is_active=(filter_status.lower() == 'active'))
+
+        return queryset.order_by('-payment_date')

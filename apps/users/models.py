@@ -111,25 +111,26 @@ class User(AbstractUser):
         """
         Upload new profile picture to Cloudinary.
         Delete old picture if exists.
-        """
+        """        
         if self.profile_picture_public_id:
             try:
-                cloudinary.uploader.destroy(self.profile_picture_public_id)
+                cloudinary.uploader.destroy(self.profile_picture_public_id)                
             except Exception as e:
-                print(f"⚠️ Failed to delete old image: {e}")
-
-        result = cloudinary.uploader.upload(
-            new_file,
-            folder=f"user_profiles/{self.pk}",
-            public_id=f"{int(timezone.now().timestamp())}",
-            overwrite=True,
-            resource_type="image",
-        )
-
-        self.profile_picture_url = result.get("secure_url")
-        self.profile_picture_public_id = result.get("public_id")
-        self.save(update_fields=["profile_picture_url", "profile_picture_public_id"])
-        return self.profile_picture_url
+                raise
+        try:
+            result = cloudinary.uploader.upload(
+                new_file,
+                folder=f"user_profiles/{self.pk}",
+                public_id=f"{int(timezone.now().timestamp())}",
+                overwrite=True,
+                resource_type="image",
+            )
+            self.profile_picture_url = result.get("secure_url")
+            self.profile_picture_public_id = result.get("public_id")
+            self.save(update_fields=["profile_picture_url", "profile_picture_public_id"])
+            return self.profile_picture_url
+        except Exception as e:
+            raise
 
     # -----------------------------
     # Dashboard helpers

@@ -199,6 +199,7 @@ def process_landmark(image_input, latitude=None, longitude=None, language="Engli
         try:
             analysis = json.loads(response.content)  # Parse the string response to a dictionary
         except json.JSONDecodeError as e:
+            #
             print(f"Error parsing AI response: {e}")
             analysis = {}
 

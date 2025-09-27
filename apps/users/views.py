@@ -1,4 +1,3 @@
-# apps/users/views.py
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from django.core.mail import send_mail
@@ -64,11 +63,55 @@ class EditProfileView(generics.UpdateAPIView):
     def get_object(self):
         return self.request.user
 
-    def put(self, request, *args, **kwargs):
-        response = self.update(request, *args, **kwargs)
-        # Track activity
-        self.request.user.update_last_activity()
-        return response
+    def patch(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # Create a copy of request data and exclude profile_picture_file for serializer
+        serializer_data = request.data.copy()
+        if "profile_picture_file" in request.FILES:
+            serializer_data.pop("profile_picture_file", None)  # Remove from serializer data
+        
+        # Initialize serializer without profile_picture_file
+        serializer = self.get_serializer(instance, data=serializer_data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        changed_fields = {}
+
+        # --- Manual Password Update (if provided) ---
+        old_password = request.data.get("old_password")
+        new_password = request.data.get("new_password")
+        if old_password and new_password:
+            if instance.check_password(old_password):
+                instance.set_password(new_password)
+                instance.save(update_fields=["password"])
+                changed_fields["password"] = "updated"
+            else:
+                return Response({"old_password": ["Old password is incorrect."]}, status=status.HTTP_400_BAD_REQUEST)
+
+        # --- Manual Profile Picture Update (if provided) ---
+        profile_picture_file = request.FILES.get("profile_picture_file")
+        if profile_picture_file:
+            try:
+                instance.update_profile_picture(profile_picture_file)
+                changed_fields["profile_picture"] = instance.profile_picture_url or "updated"
+            except Exception as e:
+                return Response({"detail": f"Profile picture upload failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # --- Apply Serializer Updates for Other Fields ---
+        serializer.save()  # Apply validated data excluding profile_picture_file
+        original_data = EditProfileSerializer(instance).data
+        for field in ["username", "free_scans_used", "total_searches", "total_scans", "total_premium_days", "is_active_premium"]:
+            original_value = original_data.get(field)
+            updated_value = getattr(instance, field)
+            if updated_value != original_value:
+                changed_fields[field] = updated_value
+
+        # Update last activity
+        instance.update_last_activity()
+
+        # Return response based on changes
+        if not changed_fields:
+            return Response({"detail": "No fields updated"}, status=status.HTTP_200_OK)
+        return Response(changed_fields, status=status.HTTP_200_OK)
 
 
 # -----------------------------

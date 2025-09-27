@@ -3,7 +3,8 @@ from .views import (
     CreateCheckoutSessionView,
     UpgradeConfirmView,
     CancelSubscriptionView,
-    UserProfileView
+    UserProfileView,
+    ConfirmSuccessView,
 )
 from .webhook import stripe_webhook
 
@@ -13,4 +14,5 @@ urlpatterns = [
     path("cancel/", CancelSubscriptionView.as_view(), name="cancel-subscription"),
     path("profile/", UserProfileView.as_view(), name="user-profile"),
     path("webhook/", stripe_webhook, name="stripe-webhook"),
+    path('confirm-success/', ConfirmSuccessView.as_view(), name='confirm-success'),
 ]

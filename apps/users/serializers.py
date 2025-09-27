@@ -104,11 +104,13 @@ class EditProfileSerializer(serializers.ModelSerializer):
     old_password = serializers.CharField(write_only=True, required=False)
     new_password = serializers.CharField(write_only=True, required=False)
     profile_picture_file = serializers.ImageField(write_only=True, required=False)
+    email = serializers.EmailField(read_only=True)  # Added email as read-only
 
     class Meta:
         model = User
         fields = (
             "username",
+            "email",  # Added to fields list
             "old_password",
             "new_password",
             "profile_picture_file",
@@ -121,6 +123,7 @@ class EditProfileSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "username": {"required": False, "allow_blank": True},
             "profile_picture_file": {"required": False},
+            "email": {"read_only": True},  # Explicitly set as read-only
         }
 
     def validate(self, attrs):
@@ -158,7 +161,6 @@ class EditProfileSerializer(serializers.ModelSerializer):
 
         instance.save()
         return instance
-
 
 # -----------------------------
 # Forgot password / OTP / Reset password serializers

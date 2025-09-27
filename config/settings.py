@@ -15,7 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(
     DEBUG=(bool, False)
 )
-environ.Env.read_env(BASE_DIR / ".env")  # 👈 load .env
+environ.Env.read_env(BASE_DIR / ".env")  
 
 # -----------------------
 # SECRET & DEBUG
@@ -42,6 +42,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://ppp7rljm-8000.inc1.devtunnels.ms",
     "http://localhost:3143",
     "http://10.10.13.2:3143",
+    "https://tourist-ai-dashboard.vercel.app",
 
 
 ]
@@ -128,9 +129,9 @@ DATABASES = {
         "PASSWORD": env("DB_PASSWORD"),
         "HOST": env("DB_HOST"),
         "PORT": env("DB_PORT"),
-     #   "OPTIONS": {
-     #       "options": "-c search_path=tour"  # 👈 sets schema to 'tour'
-     #   },
+        "OPTIONS": {
+            "options": "-c search_path=tour"  # 👈 sets schema to 'tour'
+        },
     }
 }
 
@@ -153,7 +154,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # INTERNATIONALIZATION
 # -----------------------
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
+TIME_ZONE = "Asia/Dhaka"
 USE_I18N = True
 USE_TZ = True
 
@@ -182,7 +183,7 @@ REST_FRAMEWORK = {
 # SIMPLE JWT
 # -----------------------
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=env.int("ACCESS_TOKEN_LIFETIME_MINUTES", 15)),
+    "ACCESS_TOKEN_LIFETIME": timedelta(days=env.int("ACCESS_TOKEN_LIFETIME_DAYS", 15)),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=env.int("REFRESH_TOKEN_LIFETIME_DAYS", 7)),
     "ROTATE_REFRESH_TOKENS": False,
     "BLACKLIST_AFTER_ROTATION": True,
@@ -246,3 +247,4 @@ cloudinary.config(
     api_key=CLOUDINARY["api_key"],
     api_secret=CLOUDINARY["api_secret"]
 )
+

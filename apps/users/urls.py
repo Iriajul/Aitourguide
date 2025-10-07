@@ -11,6 +11,7 @@ from .views import (
     VerifyOtpView,
     ResetPasswordView,
     LogoutView,
+    GoogleLoginView,
 )
 
 urlpatterns = [
@@ -23,6 +24,7 @@ urlpatterns = [
     # User profile
     path("me/", MeView.as_view(), name="me"),
     path("edit-profile/", EditProfileView.as_view(), name="edit_profile"),
+    path('google-login/', GoogleLoginView.as_view(), name='google_login'),
 
     # Admin: update user role
     path("<int:pk>/role/", AdminUserRoleUpdateView.as_view(), name="admin_update_role"),

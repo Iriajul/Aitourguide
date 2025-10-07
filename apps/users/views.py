@@ -4,6 +4,8 @@ from django.core.mail import send_mail
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.conf import settings
 from django.utils import timezone
+from django.core.validators import RegexValidator
+import requests
 
 from .models import User
 from .serializers import (
@@ -252,6 +254,84 @@ class ResetPasswordView(generics.GenericAPIView):
 
         return Response({"detail": "Password reset successfully."}, status=status.HTTP_200_OK)
 
+# -----------------------------
+# Google Login View
+# -----------------------------
+class GoogleLoginView(generics.GenericAPIView):
+    """
+    Handle Google Sign-In authentication (simplified for testing without OAuth).
+    Expects username (as the Google UID) and email in the request body.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        data = request.data
+        username = data.get("username")  # Changed from uid to username
+        email = data.get("email")
+
+        if not all([username, email]):
+            return Response({"detail": "Missing required fields (username and email)"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate the username using RegexValidator
+        username_validator = RegexValidator(
+            regex=r'^[\w.@+\-_\s!]+$',  # Allows letters, numbers, spaces, and the specified special characters
+            message="Enter a valid username. This value may contain only letters, numbers, spaces, and @/./+/-/_ characters."
+        )
+
+        try:
+            # Validate username
+            username_validator(username)
+
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create or update user (no Google validation for now)
+        try:
+            user, created = User.objects.update_or_create(
+                email=email,
+                defaults={
+                    "username": username,  # Use the provided username
+                    "is_active": True,
+                    "role": "registered",  # Default role
+                }
+            )
+        except Exception as e:
+            # Handle potential username conflict
+            if "unique" in str(e).lower():
+                # Fallback: Append a suffix to username if it conflicts
+                unique_username = f"{username}_{hash(email) % 1000}"
+                user, created = User.objects.update_or_create(
+                    email=email,
+                    defaults={
+                        "username": unique_username,
+                        "is_active": True,
+                        "role": "registered",
+                    }
+                )
+            else:
+                return Response({"detail": f"User creation failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+        access = str(refresh.access_token)
+
+        # Track login time + last activity
+        user.last_login_time = timezone.now()
+        user.update_last_activity()
+
+        # Recalculate premium status dynamically
+        user.recalc_premium_status()
+
+        user.save(update_fields=["last_login_time", "last_activity_time", "is_active_premium", "total_premium_days"])
+
+        # Serialize user for response
+        user_data = UserSerializer(user).data
+
+        return Response({
+            "user": user_data,
+            "access": access,
+            "refresh": str(refresh)
+        }, status=status.HTTP_200_OK)
 
 # -----------------------------
 # Logout View

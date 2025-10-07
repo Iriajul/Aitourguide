@@ -7,6 +7,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from .models import Subscription, SubscriptionPlan
 from .serializers import CheckoutSessionSerializer, UserProfileSerializer
+from apps.admin_api.serializers import SubscriptionPlanSerializer
 
 # Initialize Stripe
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -277,3 +278,18 @@ class UserProfileView(generics.RetrieveAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class SubscriptionPlansListView(generics.ListAPIView):
+    """
+    GET /api/payments/subscription-plans/
+    Returns the list of active subscription plans for the app.
+    Dynamically reflects admin changes (add, update, delete).
+    """
+    permission_classes = [permissions.AllowAny]
+    queryset = SubscriptionPlan.objects.filter(is_paused=False).order_by('name')  # Only active plans
+    serializer_class = SubscriptionPlanSerializer  # Use the same serializer as admin_api
+
+    def get_serializer_class(self):
+        # Optional: Customize serializer for app (e.g., simplify fields)
+        return SubscriptionPlanSerializer        

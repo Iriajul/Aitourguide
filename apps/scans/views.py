@@ -2,12 +2,14 @@
 import time
 from io import BytesIO
 import json
+import re
 import cloudinary.uploader
 from rest_framework import generics, permissions, status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from django.utils import timezone
 from datetime import timedelta
+import tempfile
 
 from .models import Scan
 from .serializers import ScanSerializer
@@ -17,6 +19,112 @@ from apps.payments.models import Subscription
 # Constants
 FREE_SCAN_LIMIT = 3
 FREE_SCAN_DELAY = 25  # seconds
+
+
+def parse_ai_text(ai_text: str):
+    """
+    Parse raw AI text into structured JSON with multi-language support.
+    Supports English, Chinese (Simplified), and Traditional Chinese.
+    Returns dict with key "Historical Place" or "General Place".
+    If nothing recognizable, return None.
+    """
+    if not ai_text or not isinstance(ai_text, str):
+        return None, None
+
+    lines = ai_text.strip().split("\n")
+    if len(lines) < 2:
+        return None, None
+
+    # Detect category from first line - support multiple languages
+    first_line = lines[0].strip().lower()
+    if "historical" in first_line or "历史" in first_line or "歷史" in first_line:
+        key = "Historical Place"
+    elif "general" in first_line or "一般" in first_line:
+        key = "General Place"
+    else:
+        key = "General Place"
+
+    # Multi-language field name mappings
+    FIELD_MAPPINGS = {
+        "location": ["Location", "位置"],
+        "year_completed": ["Year Completed", "建成年份"],
+        "materials": ["Materials", "材料"],
+        "architectural_style": ["Architectural Style", "建筑风格", "建築風格"],
+        "historical_overview": ["Historical Overview", "历史概述", "歷史概述"],
+        "cultural_impact": ["Cultural Impact", "文化影响", "文化影響"],
+    }
+
+    def extract_field(field_variants):
+        """
+        Extract field value supporting multiple language variants.
+        Supports both colon (:) and Chinese colon (：) as separators.
+        """
+        for variant in field_variants:
+            # Try both : and ：
+            patterns = [
+                rf"{re.escape(variant)}\s*[:：]\s*(.*)",
+                rf"{re.escape(variant)}\s*[-–—]\s*(.*)",
+            ]
+            for pattern in patterns:
+                for line in lines:
+                    m = re.match(pattern, line, re.I)
+                    if m:
+                        value = m.group(1).strip()
+                        # Filter out empty placeholders
+                        if value and value not in ["-", "–", "—", "N/A", "n/a", "None", "null"]:
+                            return value
+        return ""
+
+    def clean_text(text):
+        """Remove any leading/trailing * and whitespace"""
+        if not text:
+            return ""
+        cleaned = text.strip().strip("*").strip()
+        # Return empty string if only contains dashes or "N/A"
+        if cleaned in ["-", "–", "—", "N/A", "n/a", "None", "null"]:
+            return ""
+        return cleaned
+
+    # Extract numbered list for famous_for - support both English and Chinese numbering
+    famous_for = []
+    for line in lines:
+        # Match various list formats:
+        # - English: 1. 2. 3.
+        # - Bullets: • - *
+        # - Chinese numbers with period
+        if (re.match(r"^\d+[\.\)]\s", line.strip()) or 
+            line.strip().startswith(("• ", "- ", "* ", "· "))):
+            # Remove the prefix
+            item = re.sub(r"^[\d\u2022\u25cf\u25e6\u00b7][\.\)]\s*", "", line.strip())
+            item = item.lstrip("•-*· ").strip().strip("*")
+            if item:
+                famous_for.append(item)
+
+    # Build landmark dict using multi-language field extraction
+    landmark = {
+        "name": clean_text(lines[1]) if len(lines) > 1 else "",
+        "location": clean_text(extract_field(FIELD_MAPPINGS["location"])),
+        "year_completed": clean_text(extract_field(FIELD_MAPPINGS["year_completed"])),
+        "materials": clean_text(extract_field(FIELD_MAPPINGS["materials"])),
+        "architectural_style": clean_text(extract_field(FIELD_MAPPINGS["architectural_style"])),
+        "historical_overview": clean_text(extract_field(FIELD_MAPPINGS["historical_overview"])),
+        "cultural_impact": clean_text(extract_field(FIELD_MAPPINGS["cultural_impact"])),
+        "famous_for": famous_for or []
+    }
+
+    # Validate that we have SOME meaningful content
+    has_content = any([
+        landmark["name"],
+        landmark["location"],
+        landmark["historical_overview"],
+        landmark["cultural_impact"],
+        len(landmark["famous_for"]) > 0
+    ])
+
+    if not has_content:
+        return None, None
+
+    return {key: [landmark]}, key
 
 
 class ScanCreateView(generics.GenericAPIView):
@@ -35,7 +143,7 @@ class ScanCreateView(generics.GenericAPIView):
         # Guest check
         if not user.is_authenticated:
             return Response(
-                {"detail": "Authentication required. Please log in.", "signup_required": True},
+                {"error": {"message": "Authentication required. Please log in."}},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
@@ -43,17 +151,19 @@ class ScanCreateView(generics.GenericAPIView):
         image = request.FILES.get("image")
         latitude = request.data.get("latitude")
         longitude = request.data.get("longitude")
-        language = request.data.get("language", "English")  # Default to English if no language provided
-        source = request.data.get("source", "camera")  # Default to "camera" if not provided
+        language = request.data.get("language", "English")
+        source = request.data.get("source", "camera")
         if not image:
-            return Response({"detail": "No image uploaded"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": {"message": "No image uploaded"}}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             latitude = float(latitude) if latitude else None
             longitude = float(longitude) if longitude else None
             if source not in ["camera", "gallery"]:
-                return Response({"detail": "Invalid source. Use 'camera' or 'gallery'"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": {"message": "Invalid source. Use 'camera' or 'gallery'"}},
+                                status=status.HTTP_400_BAD_REQUEST)
         except ValueError:
-            return Response({"detail": "Invalid latitude or longitude"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": {"message": "Invalid latitude or longitude"}}, status=status.HTTP_400_BAD_REQUEST)
 
         # Subscription check
         subscription = getattr(user, "subscription", None)
@@ -63,14 +173,13 @@ class ScanCreateView(generics.GenericAPIView):
         if effective_plan == "free":
             if user.free_scans_used >= FREE_SCAN_LIMIT:
                 return Response(
-                    {"detail": "Free scans limit reached. Please purchase Boost."},
+                    {"error": {"message": "Free scans limit reached. Please purchase Boost."}},
                     status=status.HTTP_403_FORBIDDEN,
                 )
             time.sleep(FREE_SCAN_DELAY)
             user.free_scans_used += 1
             user.save(update_fields=["free_scans_used"])
 
-        # Track start time
         scan_start_time = timezone.now()
 
         # Convert uploaded image to BytesIO
@@ -79,10 +188,25 @@ class ScanCreateView(generics.GenericAPIView):
             image_bytes.write(chunk)
         image_bytes.seek(0)
 
-        # Run AI process with selected language
-        analysis = process_landmark(image_bytes, latitude=latitude, longitude=longitude, language=language)
-        if not analysis:
-            return Response({"detail": "AI processing failed"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # Save BytesIO to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            tmp.write(image_bytes.getvalue())
+            tmp_path = tmp.name
+
+        # Run AI process
+        ai_text = process_landmark(tmp_path, latitude=latitude, longitude=longitude, language=language)
+        if not ai_text:
+            # Retry with English fallback
+            ai_text = process_landmark(tmp_path, latitude=latitude, longitude=longitude, language="English")
+
+        structured_analysis, analysis_type = parse_ai_text(ai_text)
+
+        if not structured_analysis:
+            return Response({
+                "error": {
+                    "message": "The image couldn’t be clearly recognized. Please take another photo with better clarity or from a different angle."
+                }
+            }, status=status.HTTP_200_OK)
 
         # Upload to Cloudinary
         image_bytes.seek(0)
@@ -98,32 +222,32 @@ class ScanCreateView(generics.GenericAPIView):
         if latitude is not None and longitude is not None:
             location_name = get_location_from_coords(latitude, longitude)
 
-        # Track end time + precise duration in minutes
         scan_end_time = timezone.now()
         duration_seconds = (scan_end_time - scan_start_time).total_seconds()
-        duration_minutes = round(duration_seconds / 60, 2)  # stores fractions of a minute
+        duration_minutes = round(duration_seconds / 60, 2)
 
-        # Save scan with dynamic values
+        engagement_score = len(structured_analysis.get(analysis_type, [{}])[0].get("famous_for", [])) * 2.5
+
         scan = Scan.objects.create(
             user=user,
             image_url=image_url,
-            result_text=json.dumps(analysis, ensure_ascii=False, indent=2),
+            result_text=json.dumps(structured_analysis, ensure_ascii=False, indent=2),
             latitude=latitude,
             longitude=longitude,
             location_name=location_name,
             is_boosted=(effective_plan != "free"),
             scan_duration_minutes=duration_minutes,
             processed=True,
-            engagement_score=len(analysis.get("famous_for", [])) * 2.5,
-            source=source  # Save the source (camera or gallery)
+            engagement_score=engagement_score,
+            source=source
         )
 
-        # Update user stats dynamically
         user.increment_scans()
         user.update_last_activity()
 
         serializer = ScanSerializer(scan)
-        return Response({"scan": serializer.data, "analysis": analysis}, status=status.HTTP_201_CREATED)
+        return Response({"scan": serializer.data, "analysis": structured_analysis}, status=status.HTTP_201_CREATED)
+
 
 
 class ScanHistoryView(generics.ListAPIView):

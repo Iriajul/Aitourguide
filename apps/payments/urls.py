@@ -5,6 +5,7 @@ from .views import (
     CancelSubscriptionView,
     UserProfileView,
     ConfirmSuccessView,
+    SubscriptionPlansListView,
 )
 from .webhook import stripe_webhook
 
@@ -15,4 +16,5 @@ urlpatterns = [
     path("profile/", UserProfileView.as_view(), name="user-profile"),
     path("webhook/", stripe_webhook, name="stripe-webhook"),
     path('confirm-success/', ConfirmSuccessView.as_view(), name='confirm-success'),
+    path('subscription-plans/', SubscriptionPlansListView.as_view(), name='subscription-plans-list'),
 ]

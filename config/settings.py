@@ -248,3 +248,4 @@ cloudinary.config(
     api_secret=CLOUDINARY["api_secret"]
 )
 
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760 # 10 MB

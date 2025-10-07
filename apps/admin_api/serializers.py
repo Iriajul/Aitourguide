@@ -296,10 +296,11 @@ class ManageUserSerializer(serializers.ModelSerializer):
     subscription = serializers.SerializerMethodField()
     last_active = serializers.SerializerMethodField()
     actions = serializers.SerializerMethodField()
+    search_history = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'user', 'status', 'subscription', 'email', 'last_active', 'actions']
+        fields = ['id', 'user', 'status', 'subscription', 'email', 'search_history', 'last_active', 'actions']
 
     def get_user(self, obj):
         return {
@@ -326,6 +327,11 @@ class ManageUserSerializer(serializers.ModelSerializer):
             'can_ban': obj.is_active,
             'can_unban': obj.ban_expiry and timezone.now() < obj.ban_expiry
         }
+    
+    def get_search_history(self, obj):
+        # Count total searches for this user from the Scan model
+        search_count = Scan.objects.filter(user=obj).count()
+        return search_count  # Returns the number (e.g., 62); format in frontend as "62 times"
 
 # -----------------------------
 # Payment Record Serializers

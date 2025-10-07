@@ -1,8 +1,8 @@
-# apps/users/serializers.py
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User
+from django.core.validators import RegexValidator
 
 
 # -----------------------------
@@ -12,6 +12,17 @@ class UserSignupSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
     password2 = serializers.CharField(write_only=True, label="Confirm password")
     agree_terms = serializers.BooleanField(write_only=True, required=True)
+    
+    username = serializers.CharField(
+        max_length=150,
+        required=True,
+        validators=[
+            RegexValidator(
+                regex=r'^[\w.@+\-_\s]+$',  # Allows letters, numbers, spaces, and the specified special characters
+                message="Enter a valid username. This value may contain only letters, numbers, spaces, and @/./+/-/_ characters."
+            )
+        ]
+    )
 
     class Meta:
         model = User
@@ -105,6 +116,17 @@ class EditProfileSerializer(serializers.ModelSerializer):
     new_password = serializers.CharField(write_only=True, required=False)
     profile_picture_file = serializers.ImageField(write_only=True, required=False)
     email = serializers.EmailField(read_only=True)  # Added email as read-only
+    
+    username = serializers.CharField(
+        max_length=150,
+        required=False,
+        validators=[
+            RegexValidator(
+                regex=r'^[\w.@+\-_\s]+$',  # Allows letters, numbers, spaces, and the specified special characters
+                message="Enter a valid username. This value may contain only letters, numbers, spaces, and @/./+/-/_ characters."
+            )
+        ]
+    )
 
     class Meta:
         model = User

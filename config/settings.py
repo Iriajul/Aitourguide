@@ -129,9 +129,9 @@ DATABASES = {
         "PASSWORD": env("DB_PASSWORD"),
         "HOST": env("DB_HOST"),
         "PORT": env("DB_PORT"),
-        "OPTIONS": {
-            "options": "-c search_path=tour"  # 👈 sets schema to 'tour'
-        },
+        #"OPTIONS": {
+        #    "options": "-c search_path=tour"  # 👈 sets schema to 'tour'
+        #},
     }
 }
 
